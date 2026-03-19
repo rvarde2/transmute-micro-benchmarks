@@ -1,29 +1,37 @@
 #!/bin/bash
 
-# 1. Hardware Detection
+# --- 1. Cleanup Routine ---
+cleanup() {
+    echo -e "\n[!] Cleaning up background processes..."
+    [[ -n "$LATENCY_PID" ]] && kill $LATENCY_PID 2>/dev/null
+    # Global pkill ensures no detached setsid processes survive
+    pkill -9 lz4 2>/dev/null
+    pkill -9 openssl 2>/dev/null
+    pkill -P $$ 2>/dev/null
+    exit 1
+}
+
+trap cleanup SIGINT SIGTERM
+
+# --- 2. Hardware and Latency Setup ---
 TOTAL_CORES=$(nproc)
 MAX_TAX_CORES=$((TOTAL_CORES - 2))
 START_TAX_CORE=1
-# We reserve the LAST core for the Science App
-#APP_CORE=$((TOTAL_CORES - 1))
-# Adjust scaling steps based on available cores
-#if [ $MAX_TAX_CORES -le 4 ]; then
-#    CORE_COUNTS=(1 2)
-#else
-#    CORE_COUNTS=(1 2 4)
-#fi
-
 APP_CORE=9
 CORE_COUNTS=(2 4 6 8)
 
-echo "System Detected: $TOTAL_CORES cores."
-echo "Science App pinned to Core $APP_CORE."
+# Start Latency Pin to stabilize the 0.26 IPC
+if [ -f "zero_dma_latency.py" ]; then
+    echo "[+] Pinning CPU DMA Latency to 0..."
+    python3 zero_dma_latency.py & 
+    LATENCY_PID=$!
+    sleep 2 
+fi
 
-# Configuration
+# --- 3. Configuration ---
 SAMPLES=5
 MATRIX_SIZE=16384
 OUTPUT_FILE="host_tax_results.csv"
-
 echo "Mode,Cores,Sample,CompletionTime,LLC_Misses,IPC" > $OUTPUT_FILE
 
 run_sample() {
@@ -32,27 +40,24 @@ run_sample() {
     local sample_num=$3
 
     timestamp=$(date +"%T")
-    echo "$timestamp $mode $sample_num"
+    echo "$timestamp Running $mode with $cores cores (Sample $sample_num)..."
     
-    # Define the range: e.g., if cores=2 and start=1, range is 1-2
     local end_core=$((START_TAX_CORE + cores - 1))
     local core_range="$START_TAX_CORE-$end_core"
 
-    # 2. Start Background Tax
+    # --- 4. Start Background Tax (Taskset Restored) ---
     case $mode in
         "baseline")
-            TAX_PID=""
             ;;
         "encrypt")
+            # Restored taskset to ensure encryption stays off APP_CORE
             setsid taskset -c $core_range openssl speed -evp aes-128-cbc \
                 -multi $cores -bytes 8192 -seconds 1000 > ssl_out.tmp 2>&1 &
-            TAX_PID=$!
             ;;
         "compress")
             setsid /bin/bash -c "for i in \$(seq $START_TAX_CORE $end_core); do \
                 while true; do head -c 8192 /dev/zero | taskset -c \$i lz4 -z -; done > /dev/null 2>&1 & \
                 done; wait" &
-            TAX_PID=$!
             ;;
         "full_tax")
             half=$((cores / 2))
@@ -64,25 +69,20 @@ run_sample() {
                 for i in \$(seq $comp_start $end_core); do \
                 while true; do head -c 8192 /dev/zero | taskset -c \$i lz4 -z -; done > /dev/null 2>&1 & \
                 done; wait" &
-            TAX_PID=$!
             ;;
     esac
 
     sleep 2
 
-    # 3. Run Science App (Pinned to APP_CORE)
+    # --- 5. Run Science App ---
     sudo taskset -c $APP_CORE perf stat -e cycles,instructions,LLC-load-misses \
         ./science_proxy $MATRIX_SIZE $mode > proxy_out.tmp 2> perf_out.tmp
 
-    # 4. Clean up
-    if [ -n "$TAX_PID" ]; then
-        pkill -P $TAX_PID 2>/dev/null
-        kill $TAX_PID 2>/dev/null
-        pkill -9 lz4 2>/dev/null
-        pkill -9 openssl 2>/dev/null
-    fi
+    # --- 6. Cleanup for this specific sample ---
+    pkill -9 lz4 2>/dev/null
+    pkill -9 openssl 2>/dev/null
 
-    # 5. Extract Metrics
+    # --- 7. Metrics Extraction ---
     TIME=$(grep "Completion Time" proxy_out.tmp | awk '{print $3}' | sed 's/s//')
     LLC=$(grep "LLC-load-misses" perf_out.tmp | awk '{print $1}' | tr -d ',')
     IPC=$(grep "insn per cycle" perf_out.tmp | awk '{print $4}')
@@ -90,7 +90,7 @@ run_sample() {
     echo "$mode,$cores,$sample_num,$TIME,$LLC,$IPC" >> $OUTPUT_FILE
 }
 
-# --- Execution ---
+# --- 8. Main Loop ---
 for mode in "baseline" "encrypt" "compress" "full_tax"; do
     if [ "$mode" == "baseline" ]; then
         for i in $(seq 1 $SAMPLES); do run_sample "baseline" 0 $i; done
@@ -102,3 +102,5 @@ for mode in "baseline" "encrypt" "compress" "full_tax"; do
         done
     fi
 done
+
+cleanup

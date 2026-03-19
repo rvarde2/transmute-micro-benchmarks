@@ -51,6 +51,6 @@ $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 
 # Clean up
 clean:
-	rm -rf $(BUILD_DIR) *.app *.data
+	rm -rf $(BUILD_DIR) *.tmp *.out
 
 .PHONY: all clean

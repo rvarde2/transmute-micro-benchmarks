@@ -13,6 +13,6 @@ for a in "${accelerator[@]}"; do
     echo -n "Accelerator:$a @"
     date +"%T"
     for w in "${workload[@]}"; do
-        ./build/tuner -w $w.app -n $operations -a $a >> $experiment_stats
+        ./build/tuner -w $w.tmp -n $operations -a $a >> $experiment_stats
     done
 done
