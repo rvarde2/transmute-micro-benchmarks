@@ -4,6 +4,10 @@
 #include <string>
 #include <algorithm>
 
+//SHUFFLE 0: Linear; Prefetcher in-play; Compute Bound
+//SHUFFLE 1: Shuffling eliminates prefetching benefits; Memory Bound (Highly Stalled) 
+#define SHUFFLE 1
+
 // Function to perform the workload
 void scientific_workload(size_t total_elements, double* src, double* dst, const std::vector<size_t>& indices) {
     for (size_t i = 0; i < total_elements; ++i) {
@@ -33,6 +37,7 @@ int main(int argc, char* argv[]) {
         indices[i] = i;
     }
 
+#if SHUFFLE
     // 2. Simple Shuffle (Fisher-Yates) to break the prefetcher
     // We use a fixed seed (42) so every run (baseline vs tax) is identical
     srand(42);
@@ -40,6 +45,7 @@ int main(int argc, char* argv[]) {
         size_t j = rand() % (i + 1);
         std::swap(indices[i], indices[j]);
     }
+#endif
 
     // Measure only the workload
     auto start = std::chrono::high_resolution_clock::now();
